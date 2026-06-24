@@ -1,0 +1,6 @@
+{
+  "name": "AI Image Creator",
+  "description": "Create amazing AI-generated art for free! Choose from a rich style gallery, claim daily credit rewards, share your creations, and showcase your artwork on the community feed.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
