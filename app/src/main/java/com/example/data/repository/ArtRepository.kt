@@ -32,13 +32,23 @@ class ArtRepository(
     private val externalScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) {
 
+    companion object {
+        private const val TAG = "ArtRepository"
+        private const val CREDIT_COST_PER_IMAGE = 5
+        private const val DAILY_REWARD_AMOUNT = 20
+        private const val ONE_DAY_MILLIS = 24 * 60 * 60 * 1000L
+        private const val PROMPT_ENHANCEMENT_MAX_TOKENS = 150
+        private const val PROMPT_ENHANCEMENT_TEMPERATURE = 0.7f
+        private const val IMAGE_SIZE = 1024
+        private const val DEFAULT_CREDITS = 50
+    }
+
     val walletFlow: Flow<UserWallet?> = walletDao.getWalletFlow()
     val allCreations: Flow<List<Creation>> = creationDao.getAllCreations()
     val sharedCreations: Flow<List<Creation>> = creationDao.getSharedCreations()
     val allCollections: Flow<List<CollectionEntity>> = collectionDao.getAllCollections()
 
     init {
-        // Run database pre-population and initialization on a background thread
         externalScope.launch {
             initWallet()
             prepopulateDatabaseIfEmpty()
@@ -48,7 +58,9 @@ class ArtRepository(
     private suspend fun initWallet() {
         val existing = walletDao.getWallet()
         if (existing == null) {
-            walletDao.insertWallet(UserWallet(id = 1, credits = 50, lastClaimedAt = 0L))
+            walletDao.insertWallet(
+                UserWallet(id = 1, credits = DEFAULT_CREDITS, lastClaimedAt = 0L)
+            )
         }
     }
 
@@ -61,9 +73,10 @@ class ArtRepository(
     }
 
     /**
-     * Deducts credit cost (e.g., 5 credits per image) and returns true if successful.
+     * Deducts credit cost for image generation.
+     * Returns true if successful.
      */
-    suspend fun deductCredits(cost: Int): Boolean = withContext(Dispatchers.IO) {
+    suspend fun deductCredits(cost: Int = CREDIT_COST_PER_IMAGE): Boolean = withContext(Dispatchers.IO) {
         val wallet = walletDao.getWallet() ?: return@withContext false
         if (wallet.credits >= cost) {
             walletDao.insertWallet(wallet.copy(credits = wallet.credits - cost))
@@ -74,31 +87,30 @@ class ArtRepository(
     }
 
     /**
-     * Claims the daily credit reward of +20 credits (once every 24 hours).
+     * Claims the daily credit reward.
      * Returns a pair of (Success, RemainingMillisUntilNextClaim)
      */
     suspend fun claimDailyReward(): Pair<Boolean, Long> = withContext(Dispatchers.IO) {
         val wallet = walletDao.getWallet() ?: return@withContext Pair(false, 0L)
         val currentTime = System.currentTimeMillis()
-        val oneDayMillis = 24 * 60 * 60 * 1000L
         val timePassed = currentTime - wallet.lastClaimedAt
 
-        if (timePassed >= oneDayMillis) {
+        if (timePassed >= ONE_DAY_MILLIS) {
             val updatedWallet = wallet.copy(
-                credits = wallet.credits + 20,
+                credits = wallet.credits + DAILY_REWARD_AMOUNT,
                 lastClaimedAt = currentTime
             )
             walletDao.insertWallet(updatedWallet)
-            Pair(true, oneDayMillis)
+            Pair(true, ONE_DAY_MILLIS)
         } else {
-            val remaining = oneDayMillis - timePassed
+            val remaining = ONE_DAY_MILLIS - timePassed
             Pair(false, remaining)
         }
     }
 
     /**
-     * Calls Gemini to enhance the user's prompt. If the API key is missing, invalid, or
-     * the call fails, it falls back to a high-quality local rule-based enhancer.
+     * Calls Gemini to enhance the user's prompt. Falls back to a local rule-based enhancer
+     * if the API key is missing, invalid, or the call fails.
      */
     suspend fun enhancePrompt(prompt: String, styleName: String): String = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.GEMINI_API_KEY
@@ -106,29 +118,46 @@ class ArtRepository(
 
         if (hasRealApiKey) {
             try {
-                val systemPrompt = "You are an expert AI art prompt designer. Enhance the user's visual idea into a vivid, descriptive, single-paragraph prompt of 35 to 60 words for a generator. Keep it direct. Output only the final enhanced prompt, with absolutely no intro/outro or quotes."
-                val userPrompt = "Enhance this concept: '$prompt' in '$styleName' style."
-
-                val request = GenerateContentRequest(
-                    contents = listOf(Content(parts = listOf(Part(text = userPrompt)))),
-                    systemInstruction = Content(parts = listOf(Part(text = systemPrompt))),
-                    generationConfig = com.example.data.api.GenerationConfig(
-                        temperature = 0.7f,
-                        maxOutputTokens = 150
-                    )
-                )
-
-                val response = RetrofitClient.service.generateContent(apiKey, request)
-                val enhanced = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
+                val enhanced = callGeminiForPromptEnhancement(apiKey, prompt, styleName)
                 if (!enhanced.isNullOrBlank()) {
                     return@withContext enhanced
                 }
             } catch (e: Exception) {
-                Log.e("ArtRepository", "Gemini enhancement failed, using local fallback: ${e.message}")
+                Log.e(TAG, "Gemini enhancement failed, using local fallback: ${e.message}")
             }
         }
 
-        // High quality local rule-based prompt enhancer fallback
+        enhancePromptLocally(prompt, styleName)
+    }
+
+    private suspend fun callGeminiForPromptEnhancement(
+        apiKey: String,
+        prompt: String,
+        styleName: String
+    ): String? {
+        val systemPrompt = buildSystemPrompt()
+        val userPrompt = "Enhance this concept: '$prompt' in '$styleName' style."
+
+        val request = GenerateContentRequest(
+            contents = listOf(Content(parts = listOf(Part(text = userPrompt)))),
+            systemInstruction = Content(parts = listOf(Part(text = systemPrompt))),
+            generationConfig = com.example.data.api.GenerationConfig(
+                temperature = PROMPT_ENHANCEMENT_TEMPERATURE,
+                maxOutputTokens = PROMPT_ENHANCEMENT_MAX_TOKENS
+            )
+        )
+
+        val response = RetrofitClient.service.generateContent(apiKey, request)
+        return response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim()
+    }
+
+    private fun buildSystemPrompt(): String {
+        return "You are an expert AI art prompt designer. " +
+            "Enhance the user's visual idea into a vivid, descriptive, single-paragraph prompt of 35 to 60 words for a generator. " +
+            "Keep it direct. Output only the final enhanced prompt, with absolutely no intro/outro or quotes."
+    }
+
+    private fun enhancePromptLocally(prompt: String, styleName: String): String {
         val styleDescriptors = when (styleName.lowercase()) {
             "anime" -> "anime key visual, vibrant pastel colors, detailed line art, clean soft shading, mystical elements, high-resolution Studio Ghibli inspired"
             "cyberpunk" -> "futuristic cyberpunk style, neon ambient glow, towering digital skyscrapers, rain-slicked pavement with colorful reflections, 8k resolution, cinematic atmosphere"
@@ -140,22 +169,23 @@ class ArtRepository(
             "cosmic space" -> "majestic cosmic scene, swirling vibrant nebulas, sparkling stellar dust, grand galaxies, ethereal dreamlike celestial illumination"
             "ghibli" -> "whimsical, nostalgic hand-painted anime backgrounds, Studio Ghibli aesthetic, soft natural lighting, peaceful cloud-filled skies, vibrant greenery, cozy watercolor textures"
             "art nouveau" -> "ornate decorative curves, elegant fluid lines, Alphonse Mucha inspired portraits, organic forms, stylized floral backgrounds, rich gold leaf highlights, high-fidelity fine art"
-            "surrealism" -> " Salvador Dali inspired dreamscapes, melting clocks, surreal floating islands, juxtaposition of unusual objects, hyper-realistic details, otherworldly atmosphere, deep subconscious themes"
+            "surrealism" -> "Salvador Dali inspired dreamscapes, melting clocks, surreal floating islands, juxtaposition of unusual objects, hyper-realistic details, otherworldly atmosphere, deep subconscious themes"
             "abstract expressionism" -> "Jackson Pollock style dynamic paint splashes, spontaneous expressive brushstrokes, rich colorful textures, emotional energy, non-representational canvas, high action art"
             "vaporwave" -> "80s retro-futurism aesthetic, pink and purple grid sunsets, marble classical sculptures, VHS glitch effects, nostalgic low-poly cyber landscapes, Microsoft Windows 95 icons"
             "pixel art" -> "detailed 16-bit retro video game graphics, crisp pixels, vibrant color palette, nostalgic RPG background art, perfect alignment, classic arcade visual design"
             "origami" -> "intricately folded paper crafts, clean paper folding lines, soft studio shadow and lighting, elegant geometric shapes, minimal textured craft paper aesthetic"
             "impressionism" -> "Claude Monet inspired waterlilies gardens, dappled sunlight filtering through trees, quick visible brush dabs, rich natural colors, shimmering atmospheric lighting"
-            "claymation" -> "stop-motion clay animation style, cute cute tactile characters, plasticine models with subtle hand-molded fingerprints, soft studio lighting, playful 3D textures"
+            "claymation" -> "stop-motion clay animation style, cute tactile characters, plasticine models with subtle hand-molded fingerprints, soft studio lighting, playful 3D textures"
             "pop art" -> "Andy Warhol retro halftone dot screens, bold high-contrast color blocks, comic book style thick black outlines, vintage screenprint look, popular culture motifs"
             else -> "beautiful, highly detailed artistic render, gorgeous lighting, 8k resolution, crisp focus"
         }
 
-        "A high-quality representation of $prompt, crafted in a distinct $styleName style. Featuring $styleDescriptors, beautifully composed, clean focus, masterpiece details."
+        return "A high-quality representation of $prompt, crafted in a distinct $styleName style. " +
+            "Featuring $styleDescriptors, beautifully composed, clean focus, masterpiece details."
     }
 
     /**
-     * Generates a fully functional image URL using Pollinations.ai with seed and size settings.
+     * Generates an image URL using Pollinations.ai with seed and size settings.
      */
     fun buildGeneratedImageUrl(enhancedPrompt: String): String {
         val encodedPrompt = try {
@@ -164,7 +194,7 @@ class ArtRepository(
             enhancedPrompt.replace(" ", "%20")
         }
         val randomSeed = (1..10000).random()
-        return "https://image.pollinations.ai/p/$encodedPrompt?width=1024&height=1024&nologo=true&seed=$randomSeed"
+        return "https://image.pollinations.ai/p/$encodedPrompt?width=$IMAGE_SIZE&height=$IMAGE_SIZE&nologo=true&seed=$randomSeed"
     }
 
     /**

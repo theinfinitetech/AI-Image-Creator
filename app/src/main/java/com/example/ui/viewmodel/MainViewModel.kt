@@ -29,6 +29,16 @@ data class ArtStyle(
 
 class MainViewModel(private val repository: ArtRepository) : ViewModel() {
 
+    companion object {
+        private const val CREDIT_COST_PER_IMAGE = 5
+        private const val UPDATE_INTERVAL_MILLIS = 10_000L
+        private const val AUTHOR_NAME = "You"
+        private const val ONE_DAY_MILLIS = 24 * 60 * 60 * 1000L
+        private const val HOURS_PER_DAY = 24
+        private const val MILLIS_PER_HOUR = 1000 * 60 * 60
+        private const val MILLIS_PER_MINUTE = 1000 * 60
+    }
+
     val wallet: StateFlow<UserWallet?> = repository.walletFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
@@ -36,7 +46,7 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val myHistory: StateFlow<List<Creation>> = repository.allCreations
-        .map { list -> list.filter { it.authorName == "You" } }
+        .map { list -> list.filter { it.authorName == AUTHOR_NAME } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val sharedCreations: StateFlow<List<Creation>> = repository.sharedCreations
@@ -144,10 +154,6 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
         _recentlyGenerated.value = null
     }
 
-    /**
-     * Triggers the generation of an image. Deducts credits, calls Gemini
-     * to enhance, creates the Pollinations.ai URL, and saves to Room.
-     */
     fun generateImage() {
         val userPrompt = _prompt.value.trim()
         if (userPrompt.isEmpty()) {
@@ -160,22 +166,16 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
         _recentlyGenerated.value = null
 
         viewModelScope.launch {
-            // Check & deduct credits (costs 5 credits)
-            val success = repository.deductCredits(5)
-            if (!success) {
+            if (!repository.deductCredits()) {
                 _generationError.value = "Insufficient credits! Claim daily rewards or generate later."
                 _isGenerating.value = false
                 return@launch
             }
 
             try {
-                // Call Gemini API to enhance prompt
                 val enhanced = repository.enhancePrompt(userPrompt, _selectedStyle.value.name)
-
-                // Build Image URL
                 val imageUrl = repository.buildGeneratedImageUrl(enhanced)
 
-                // Save to Database
                 val creation = Creation(
                     prompt = userPrompt,
                     enhancedPrompt = enhanced,
@@ -184,14 +184,11 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
                     isShared = false,
                     likes = 0,
                     isLikedByMe = false,
-                    authorName = "You"
+                    authorName = AUTHOR_NAME
                 )
 
                 val id = repository.saveCreation(creation)
-                val finalCreation = creation.copy(id = id.toInt())
-
-                _recentlyGenerated.value = finalCreation
-                // Keep the input text ready for next ideas
+                _recentlyGenerated.value = creation.copy(id = id.toInt())
             } catch (e: Exception) {
                 _generationError.value = "Generation failed: ${e.localizedMessage ?: "Unknown error"}"
             } finally {
@@ -237,21 +234,15 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
         _activeCommentPostId.value = postId
     }
 
-    /**
-     * Adds a comment to a creation post.
-     */
     fun submitComment(postId: Int, text: String) {
         val commentText = text.trim()
         if (commentText.isEmpty()) return
 
         viewModelScope.launch {
-            repository.addComment(postId, commentText, "You")
+            repository.addComment(postId, commentText, AUTHOR_NAME)
         }
     }
 
-    /**
-     * Claim daily reward action.
-     */
     fun claimDailyCredits() {
         viewModelScope.launch {
             val result = repository.claimDailyReward()
@@ -259,8 +250,8 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
                 _rewardStatus.value = "Claimed successfully! +20 Credits awarded! 🎉"
                 startClaimCountdownTicker()
             } else {
-                val hours = result.second / (1000 * 60 * 60)
-                val mins = (result.second % (1000 * 60 * 60)) / (1000 * 60)
+                val hours = result.second / MILLIS_PER_HOUR
+                val mins = (result.second % MILLIS_PER_HOUR) / MILLIS_PER_MINUTE
                 _rewardStatus.value = "Already claimed! Try again in $hours hrs $mins mins."
             }
         }
@@ -277,11 +268,10 @@ class MainViewModel(private val repository: ArtRepository) : ViewModel() {
                 val currentWallet = repository.walletFlow.firstOrNull() ?: wallet.value
                 if (currentWallet != null) {
                     val timePassed = System.currentTimeMillis() - currentWallet.lastClaimedAt
-                    val oneDayMillis = 24 * 60 * 60 * 1000L
-                    val remaining = (oneDayMillis - timePassed).coerceAtLeast(0L)
+                    val remaining = (ONE_DAY_MILLIS - timePassed).coerceAtLeast(0L)
                     _remainingClaimMillis.value = remaining
                 }
-                delay(10000) // update countdown every 10 seconds to save power
+                delay(UPDATE_INTERVAL_MILLIS)
             }
         }
     }

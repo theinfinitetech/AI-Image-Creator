@@ -1,18 +1,91 @@
-*.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+```
+# Kotlin/Android build artifacts
+*.class
+*.dex
+*.jar
+*.aar
+
+# Build directories
+build/
+.gradle/
+target/
+
+# Local configuration file (sdk path, etc)
 local.properties
+
+# Android Studio generated files
+*.iml
+*.iws
+*.idea/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Environment variables
 .env
-debug.keystore
+.env.local
+.env.*
+
+# Coverage reports
+coverage/
+*.gcov
+*.lcov
+
+# IDE
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Python related (if any Python scripts in project)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Node.js related (if any web components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Testing
+*.test
+*.tests
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+```
